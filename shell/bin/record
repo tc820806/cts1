@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Screen recorder (the recorder popup runs it). Partly based on Caelestia's CLI (https://github.com/caelestia-dots/cli,
+# GPL-3.0-only), its `caelestia record`: same gpu-screen-recorder flags (-r region, -s sound, -p pause, none while
+# recording = stop), sway instead of Hyprland.
+# --status: exit 0 while recording. Output: $(xdg-user-dir VIDEOS)/Recordings.
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cts1"
+REC_PATH="$STATE_DIR/recording.mp4"
+videos=$(xdg-user-dir VIDEOS 2>/dev/null || true)
+[ -n "$videos" ] && [ "$videos" != "$HOME" ] || videos="$HOME/Videos"
+RECORDINGS_DIR="$videos/Recordings"
+PID_FILE="$STATE_DIR/recorder.pid"      # watched by the taskbar
+RECORDER="gpu-screen-recorder"
+
+# The recorder this script started: PID_FILE's pid if still gpu-screen-recorder (others are left alone); a stale
+# file is removed.
+recorder_pid() {
+    local pid argv0
+    { read -r pid < "$PID_FILE"; } 2>/dev/null || return 1
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        argv0=$({ tr '\0' '\n' < "/proc/$pid/cmdline"; } 2>/dev/null | head -n 1 || true)
+        if [ "${argv0##*/}" = "$RECORDER" ]; then
+            echo "$pid"
+            return 0
+        fi
+    fi
+    rm -f "$PID_FILE"
+    return 1
+}
+running() { recorder_pid >/dev/null; }
+
+pause_toggle() {
+    local pid
+    pid=$(recorder_pid) && kill -USR2 "$pid" || true
+    exit 0
+}
+
+stop() {
+    local pid
+    pid=$(recorder_pid) && kill "$pid" || true
+    while running; do sleep 0.1; done
+    rm -f "$PID_FILE"
+
+    mkdir -p "$RECORDINGS_DIR"
+    new_path="$RECORDINGS_DIR/recording_$(date +%Y%m%d_%H-%M-%S).mp4"
+    mv "$REC_PATH" "$new_path"
+
+    # Wait for Open/Delete in the background (the taskbar's buttons do nothing while this script runs).
+    (
+        action=$(notify-send --action=open=Open --action=delete=Delete \
+            "Recording stopped" "Saved to $new_path" 2>/dev/null || true)
+        case "$action" in
+            open) xdg-open "$(dirname "$new_path")" ;;
+            delete) rm -f "$new_path" ;;
+        esac
+    ) </dev/null >/dev/null 2>&1 &
+    disown
+    exit 0
+}
+
+start() {
+    local sound="$1" region="$2"
+    local args=(-w)
+
+    if [ "$region" = "1" ]; then
+        local geom rr
+        geom=$(slurp -f "%wx%h+%x+%y")
+        args+=(region -region "$geom")
+        # Highest refresh rate among the active outputs (the region may span several).
+        rr=$(swaymsg -t get_outputs | jq '[.[] | select(.active) | .current_mode.refresh] | max / 1000 | round')
+        [ "${rr:-0}" -gt 0 ] 2>/dev/null || rr=60     # headless outputs report none
+        args+=(-f "$rr")
+    else
+        local out rr
+        read -r out rr < <(swaymsg -t get_outputs |
+            jq -r '(map(select(.focused)) + .)[0] | "\(.name) \(.current_mode.refresh / 1000 | round)"')
+        [ "${rr:-0}" -gt 0 ] 2>/dev/null || rr=60     # headless outputs report none
+        args+=("$out" -f "$rr")
+    fi
+
+    [ "$sound" = "1" ] && args+=(-a default_output)
+
+    mkdir -p "$STATE_DIR"
+    rm -f "$REC_PATH"
+    "$RECORDER" "${args[@]}" -o "$REC_PATH" >"$STATE_DIR/record.log" 2>&1 &
+    echo "$!" >"$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+    disown
+    sleep 0.3
+    if ! running; then
+        notify-send "Recording failed" "gpu-screen-recorder exited immediately, see $STATE_DIR/record.log"
+        exit 1
+    fi
+    notify-send "Recording started" "Recording..."
+}
+
+sound=0 region=0 pause=0 status=0
+for arg in "$@"; do
+    case "$arg" in
+        -sr|-rs) sound=1; region=1 ;;
+        -s) sound=1 ;;
+        -r) region=1 ;;
+        -p) pause=1 ;;
+        --status) status=1 ;;
+    esac
+done
+
+if [ "$status" = "1" ]; then
+    if running; then exit 0; else exit 1; fi
+elif [ "$pause" = "1" ]; then
+    pause_toggle
+elif running; then
+    stop
+else
+    start "$sound" "$region"
+fi

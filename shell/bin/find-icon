@@ -1,0 +1,20 @@
+#!/bin/bash
+# Print the file for an icon name, or nothing: hicolor, then pixmaps, then any theme (XDG order); in the first folder
+# with a match, an SVG, else the largest PNG.
+n=$1
+[ -n "$n" ] || exit 0
+IFS=:
+bases=${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
+for sub in icons/hicolor pixmaps icons; do
+    for b in $bases; do
+        [ -d "$b/$sub" ] || continue
+        hit=$(find "$b/$sub" \( -iname "$n.svg" -o -iname "$n.png" \) 2>/dev/null | awk '
+            { s = 1
+              if ($0 ~ /\.svg$/) s = 100000
+              else if (match($0, /[0-9]+x[0-9]+/)) s = substr($0, RSTART, RLENGTH) + 0
+              if (s > best) { best = s; p = $0 } }
+            END { if (p != "") print p }')
+        [ -n "$hit" ] && { echo "$hit"; exit 0; }
+    done
+done
+exit 0

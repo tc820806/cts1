@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Sway
+Comment=Sway with the CTS1 shell
+# Exec needs the full path to sway-config/bin/sway in your clone (desktop files don't expand variables).
+Exec=/path/to/cts1/sway-config/bin/sway
+Type=Application
+DesktopNames=sway

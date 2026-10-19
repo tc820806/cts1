@@ -1,0 +1,49 @@
+#!/bin/bash
+# Restart the shell leaving exactly ONE copy. Not `qs kill`: Quickshell can crash in teardown, and its crash handler
+# then starts a SECOND shell (two taskbars, wrong notification owner). SIGKILL skips the teardown. Only this config on
+# this display is touched (a nested/headless copy is left alone). Never while locked.
+
+CONFIG=$(cd "$(dirname "$0")/.." && pwd)
+
+descendants() {
+    for child in $(pgrep -P "$1"); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
+# This config's instances (a crash reporter keeps the pid) plus plain launches. With none, `qs list --json` prints
+# non-JSON: jq's error is hidden.
+roots=$( {
+    qs list --all --json 2>/dev/null | jq -r --arg c "$CONFIG/shell.qml" '.[] | select(.config_path == $c) | .pid' 2>/dev/null
+    pgrep -f "^qs -p $CONFIG\$"
+} | sort -u)
+
+display_of() {
+    tr '\0' '\n' < /proc/"$1"/environ 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p'
+}
+
+targets=""
+for pid in $roots; do
+    # Stale `qs list` entries can point at dead or reused pids.
+    case "$(cat /proc/"$pid"/comm 2>/dev/null)" in
+        qs|quickshell) ;;
+        *) continue ;;
+    esac
+    [ "$(display_of "$pid")" = "${WAYLAND_DISPLAY:-}" ] || continue
+    targets="$targets $pid $(descendants "$pid")"
+done
+
+[ -n "$targets" ] && kill -KILL $targets 2>/dev/null
+
+# Wait (max 3 s) until they are gone, so the new shell can take the D-Bus names.
+for _ in $(seq 1 30); do
+    alive=""
+    for pid in $targets; do
+        kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ -z "$alive" ] && break
+    sleep 0.1
+done
+
+exec setsid qs -p "$CONFIG" >/dev/null 2>&1

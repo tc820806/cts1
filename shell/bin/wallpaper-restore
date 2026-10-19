@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# At login: start awww and re-apply the last picked wallpaper.
+set -euo pipefail
+
+awww-daemon &
+
+for _ in $(seq 1 50); do
+    awww query >/dev/null 2>&1 && break
+    sleep 0.1
+done
+
+state_file="${XDG_STATE_HOME:-$HOME/.local/state}/cts1/wallpaper"
+if [ -f "$state_file" ] && [ -f "$(cat "$state_file")" ]; then
+    awww img "$(cat "$state_file")"
+fi

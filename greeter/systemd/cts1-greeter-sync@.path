@@ -1,0 +1,13 @@
+# Re-sync the greeter whenever USER's CTS1 scheme or wallpaper changes.
+# Enable for one user: systemctl enable --now cts1-greeter-sync@USER.path   (assumes the home folder is /home/USER)
+[Unit]
+Description=Watch %i's CTS1 scheme and wallpaper for the CTS1 greeter
+
+[Path]
+PathChanged=/home/%i/.local/state/cts1/scheme.json
+PathChanged=/home/%i/.local/state/cts1/wallpaper
+Unit=cts1-greeter-sync@%i.service
+
+[Install]
+WantedBy=paths.target
+Also=cts1-greeter-sync@%i.service

@@ -1,0 +1,21 @@
+# Copies USER's CTS1 scheme and wallpaper to /var/lib/cts1-greeter (see sync.sh). Runs at boot, before the
+# login screen, and whenever cts1-greeter-sync@USER.path sees a change.
+[Unit]
+Description=Copy %i's CTS1 scheme and wallpaper to the CTS1 greeter
+Before=display-manager.service
+# No start limit: one wallpaper change touches two watched files, so a few quick changes would pass systemd's
+# default (5 starts in 10 s), and the path unit would then stop watching until reset. A run is a quick copy.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/share/cts1-greeter/sync.sh %i
+StateDirectory=cts1-greeter
+StateDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target

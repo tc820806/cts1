@@ -1,0 +1,39 @@
+#!/bin/bash
+# CTS1 sway session (sway.desktop runs it).
+
+CTS1_DIR=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
+export CTS1_DIR
+
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_DESKTOP=sway
+export XDG_SESSION_TYPE=wayland
+
+# qtengine: the dark style and colors for Qt apps and the shell's tray menus.
+export QT_QPA_PLATFORMTHEME=qtengine
+
+# The user's session variables (`export NAME=value` lines), read before sway starts.
+SESSION_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/cts1/session.env"
+[ -f "$SESSION_ENV" ] && . "$SESSION_ENV"
+
+D="${XDG_STATE_HOME:-$HOME/.local/state}/cts1/logs"
+mkdir -p "$D"
+LOG="$D/sway-$(date +%Y-%m-%d_%H%M%S).log"
+# Keep this session's log plus the 4 newest.
+ls -1t "$D"/sway-*.log 2>/dev/null | tail -n +5 | while IFS= read -r f; do rm -f "$f"; done
+
+# Login record (utmp), which greetd doesn't write: without it `who` shows nobody and apps waiting for a logged-in user
+# (a VPN tray icon) don't start. sessreg records its parent, so sway runs as our child; the record is written once sway
+# exported SWAYSOCK to the systemd user environment, needs the utmp group, and is removed when sway exits.
+/usr/bin/sway --unsupported-gpu -c "$CTS1_DIR/sway-config/config" >"$LOG" 2>&1 &
+SWAY=$!
+trap 'kill -TERM "$SWAY" 2>/dev/null' TERM HUP INT
+TTY=$(loginctl show-session "$XDG_SESSION_ID" -p TTY --value 2>/dev/null)
+TTY=${TTY:-tty1}
+SOCK="SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.$(id -u).$SWAY.sock"
+i=0
+while [ $i -lt 30 ] && kill -0 "$SWAY" 2>/dev/null && ! systemctl --user show-environment | grep -qxF "$SOCK"; do
+    sleep 1; i=$((i + 1))
+done
+kill -0 "$SWAY" 2>/dev/null && /usr/bin/sessreg -a -l "$TTY" "$USER"
+while kill -0 "$SWAY" 2>/dev/null; do wait "$SWAY"; done
+/usr/bin/sessreg -d -l "$TTY" "$USER"

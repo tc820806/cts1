@@ -1,0 +1,12 @@
+#!/bin/sh
+# screenshot area|edit|full: to Pictures/Screenshots. area and full are also copied; edit opens swappy (saves on close).
+if [ "$1" != full ]; then g=$(slurp) || exit; fi
+p=$(xdg-user-dir PICTURES 2>/dev/null); [ -n "$p" ] && [ "$p" != "$HOME" ] || p="$HOME/Pictures"
+mkdir -p "$p/Screenshots"
+f="$p/Screenshots/screenshot-$(date +%Y%m%d-%H%M%S).png"
+case $1 in
+    area) grim -g "$g" "$f" && wl-copy --type image/png < "$f" ;;
+    edit) grim -g "$g" - | swappy -f - -o "$f" ;;
+    full) grim "$f" && wl-copy --type image/png < "$f" &&
+        notify-send -a Screenshot -h "string:image-path:$f" "Screenshot saved" "${f##*/} (copied to clipboard)" ;;
+esac

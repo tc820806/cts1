@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# Color scheme from a wallpaper: $XDG_STATE_HOME/cts1/scheme.json (shell, lock and login screen; light for a bright
+# picture), the always-dark fuzzel/GTK/Thunar/Qt files and sway's focused border. Usage: scheme-gen [--mode dark|light]
+# <image>; without --mode, config.json's appearance mode ("auto" = by brightness).
+# Partly based on Caelestia's CLI (https://github.com/caelestia-dots/cli, GPL-3.0-only): utils/material/score.py +
+# generator.py, utils/colourfulness.py, the smart variant in utils/wallpaper.py, the scheme.json format and
+# ../templates. Differences: app files stay dark, only the "default" flavor, no cache, four extra harmonized* colors, seed only from the better-scored colors (score()).
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from materialyoucolor.blend import Blend
+from materialyoucolor.dislike.dislike_analyzer import DislikeAnalyzer
+from materialyoucolor.dynamiccolor.material_dynamic_colors import MaterialDynamicColors
+from materialyoucolor.hct import Hct
+from materialyoucolor.quantize import ImageQuantizeCelebi
+from materialyoucolor.scheme.scheme_content import SchemeContent
+from materialyoucolor.scheme.scheme_neutral import SchemeNeutral
+from materialyoucolor.scheme.scheme_tonal_spot import SchemeTonalSpot
+from materialyoucolor.utils.math_utils import (
+    difference_degrees,
+    rotation_direction,
+    sanitize_degrees_double,
+    sanitize_degrees_int,
+)
+from PIL import Image
+
+HOME = Path.home()
+STATE_DIR = Path(os.getenv("XDG_STATE_HOME", HOME / ".local/state")) / "cts1"
+CONFIG_DIR = Path(os.getenv("XDG_CONFIG_HOME", HOME / ".config"))
+CTS1_CONFIG = Path(os.getenv("CTS1_CONFIG_DIR") or CONFIG_DIR / "cts1") / "config.json"
+TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
+
+# Template -> (output files, colors as #rrggbb; fuzzel wants rrggbb + its own alpha).
+APP_FILES = {
+    "fuzzel.ini": (["fuzzel/fuzzel.ini"], False),
+    "gtk.css": (["gtk-3.0/gtk.css", "gtk-4.0/gtk.css"], True),
+    "thunar.css": (["gtk-3.0/thunar.css"], True),
+    "qtdark.colors": (["qtengine/caelestia.colors"], True),
+}
+THUNAR_IMPORT = '\n@import "thunar.css";\n'
+
+# Sway's focused border in the shell's colors (not the dark app ones): $XDG_STATE_HOME/cts1/sway.conf, which sway
+# includes; also sent to the running sway.
+SWAY_TEMPLATE = TEMPLATES / "sway.conf"
+
+# ---------- Seed color and variant ----------
+
+def colourfulness(img: Image.Image) -> float:
+    rg, yb = [], []
+    data = img.tobytes()
+    for r, g, b in zip(data[0::3], data[1::3], data[2::3]):
+        rg.append(abs(r - g))
+        yb.append(abs(0.5 * (r + g) - b))
+
+    def mean(v):
+        return sum(v) / len(v)
+
+    def std(v, m):
+        return math.sqrt(sum((x - m) ** 2 for x in v) / len(v))
+
+    mrg, myb = mean(rg), mean(yb)
+    return math.sqrt(std(rg, mrg) ** 2 + std(yb, myb) ** 2) + 0.3 * math.sqrt(mrg**2 + myb**2)
+
+def variant_for(img: Image.Image) -> str:
+    c = colourfulness(img)
+    return "neutral" if c < 10 else "content" if c < 20 else "tonalspot"
+
+def score(colours_to_population: dict, filter_enabled: bool = False) -> Hct:
+    colours = []
+    hue_population = [0] * 360
+    total = 0
+    for argb, population in colours_to_population.items():
+        hct = Hct.from_int(argb)
+        colours.append(hct)
+        hue_population[int(hct.hue)] += population
+        total += population
+
+    excited = [0.0] * 360
+    for hue in range(360):
+        proportion = hue_population[hue] / total
+        for i in range(hue - 14, hue + 16):
+            excited[int(sanitize_degrees_int(i))] += proportion
+
+    scored = []
+    for hct in colours:
+        proportion = excited[int(sanitize_degrees_int(round(hct.hue)))]
+        if filter_enabled and (hct.chroma < 5.0 or proportion <= 0.01):
+            continue
+        chroma_weight = 0.1 if hct.chroma < 48.0 else 0.3
+        scored.append((proportion * 100.0 * 0.7 + (hct.chroma - 48.0) * chroma_weight, hct))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    # CTS1: only colors scoring at least a third of the best may be picked. Otherwise a dull, dark picture (a blue-gray
+    # alley) seeds from a tiny bright detail (a red scarf).
+    if scored and scored[0][0] > 0:
+        scored = [s for s in scored if s[0] >= scored[0][0] / 3]
+
+    for cutoff in range(20, -1, -1):
+        for _, hct in scored:
+            if hct.chroma > cutoff and hct.tone > cutoff * 3:
+                return DislikeAnalyzer.fix_if_disliked(hct)
+    return score(colours_to_population, False)
+
+# ---------- Palette ----------
+
+def hex_hct(h: str) -> Hct:
+    return Hct.from_int(int(f"0xFF{h}", 16))
+
+# Terminal (gruvbox; light = Caelestia's) and named colors (catppuccin mocha / latte), shifted towards the seed's hue.
+# Index 0 = dark, 1 = light.
+TERM = [[hex_hct(h) for h in hexes.split()] for hexes in (
+    "282828 CC241D 98971A D79921 458588 B16286 689D6A A89984 928374 FB4934 B8BB26 FABD2F 83A598 D3869B 8EC07C EBDBB2",
+    "FDF9F3 FF6188 A9DC76 FC9867 FFD866 F47FD4 78DCE8 333034 121212 FF6188 A9DC76 FC9867 FFD866 F47FD4 78DCE8 333034")]
+NAMED_KEYS = "rosewater flamingo pink mauve red maroon peach yellow green teal sky sapphire blue lavender".split()
+NAMED = [dict(zip(NAMED_KEYS, [hex_hct(h) for h in hexes.split()])) for hexes in (
+    "f5e0dc f2cdcd f5c2e7 cba6f7 f38ba8 eba0ac fab387 f9e2af a6e3a1 94e2d5 89dceb 74c7ec 89b4fa b4befe",
+    "dc8a78 dd7878 ea76cb 8839ef d20f39 e64553 fe640b df8e1d 40a02b 179299 04a5e5 209fb5 1e66f5 7287fd")]
+KCOLOURS = {"klink": "2980b9", "kvisited": "9b59b6", "knegative": "da4453", "kneutral": "f67400",
+            "kpositive": "27ae60"}
+SCHEMES = {"content": SchemeContent, "neutral": SchemeNeutral, "tonalspot": SchemeTonalSpot}
+
+def harmonize(c: Hct, to: Hct, tone_boost: float) -> Hct:
+    rotation = min(difference_degrees(c.hue, to.hue) * 0.8, 100)
+    hue = sanitize_degrees_double(c.hue + rotation * rotation_direction(c.hue, to.hue))
+    return Hct.from_hct(hue, c.chroma, c.tone * (1 + tone_boost))
+
+def mix(a: Hct, b: Hct, w: float) -> Hct:
+    return Hct.from_int(Blend.cam16_ucs(a.to_int(), b.to_int(), w))
+
+def is_light_image(img: Image.Image) -> bool:
+    # Caelestia's rule: light mode when the picture's average color is brighter than tone 60.
+    img = img.copy()
+    img.thumbnail((1, 1), Image.Resampling.LANCZOS)
+    r, g, b = img.getpixel((0, 0))
+    return Hct.from_int(0xFF000000 | r << 16 | g << 8 | b).tone > 60
+
+def darken(c: Hct, amount: float) -> Hct:
+    diff = c.tone * amount
+    return Hct.from_hct(c.hue, c.chroma - diff / 5, c.tone - diff)
+
+def palette(seed: Hct, variant: str, light: bool) -> dict[str, str]:
+    scheme = SCHEMES[variant](source_color_hct=seed, is_dark=not light, contrast_level=0.0)
+    c = {colour.name: colour.get_hct(scheme) for colour in MaterialDynamicColors().all_colors}
+    for name in "primary", "secondary", "tertiary", "neutral":
+        c[f"{name}_paletteKeyColor"] = c[f"{name}PaletteKeyColor"]
+    c["neutral_variant_paletteKeyColor"] = c["neutralVariantPaletteKeyColor"]
+
+    key = c["primary_paletteKeyColor"]
+    for i, hct in enumerate(TERM[light]):
+        c[f"term{i}"] = harmonize(hct, key, (0.35 if i < 8 else 0.2) * (-1 if light else 1))
+    for name, hct in NAMED[light].items():
+        c[name] = harmonize(hct, key, -0.2 if light else 0.05)
+    for name, h in KCOLOURS.items():
+        c[name] = harmonize(hex_hct(h), c["primary"], 0.1)
+        c[f"{name}Selection"] = harmonize(hex_hct(h), c["onPrimaryFixedVariant"], 0.1)
+
+    if variant == "neutral":
+        for hct in c.values():
+            hct.chroma -= 15
+
+    c["text"] = c["onBackground"]
+    c["subtext1"] = c["onSurfaceVariant"]
+    c["subtext0"] = c["outline"]
+    for name, w in ("overlay2", 0.86), ("overlay1", 0.71), ("overlay0", 0.57), \
+                   ("surface2", 0.43), ("surface1", 0.29), ("surface0", 0.14):
+        c[name] = mix(c["surface"], c["outline"], w)
+    c["base"] = c["surface"]
+    c["mantle"] = darken(c["surface"], 0.03)
+    c["crust"] = darken(c["surface"], 0.05)
+
+    out = {k: f"{v.to_int() & 0xFFFFFF:06x}" for k, v in c.items()}
+    if light:
+        out.update(success="4F6354", onSuccess="FFFFFF", successContainer="D1E8D5", onSuccessContainer="0C1F13")
+    else:
+        out.update(success="B5CCBA", onSuccess="213528", successContainer="374B3E", onSuccessContainer="D1E9D6")
+
+    # CTS1 extra keys: colors that must stay recognizable (red = shut down), harmonized (max 15 degrees) instead of the
+    # shift above (up to 100).
+    for name in "mauve", "blue", "yellow", "red":
+        h = NAMED[light][name].to_int()
+        out[f"harmonized{name.capitalize()}"] = f"{Blend.harmonize(h, seed.to_int()) & 0xFFFFFF:06x}"
+    return out
+
+# ---------- Output ----------
+
+def write_atomic(path: Path, text: str) -> None:
+    # One step, so the shell's file watcher never reads a half-written file.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+def fill(template: str, colours: dict[str, str], hash: bool) -> str:
+    for name, colour in colours.items():
+        template = template.replace(f"{{{{ ${name} }}}}", f"#{colour}" if hash else colour)
+    return template
+
+def configured_mode() -> str:
+    try:
+        mode = json.loads(CTS1_CONFIG.read_text()).get("appearance", {}).get("mode", "auto")
+    except (OSError, ValueError, AttributeError):
+        mode = "auto"
+    return mode if mode in ("dark", "light") else "auto"
+
+def main() -> None:
+    args = sys.argv[1:]
+    mode = configured_mode()
+    if len(args) == 3 and args[0] == "--mode" and args[1] in ("dark", "light"):
+        mode = args[1]
+        args = args[2:]
+    if len(args) != 1:
+        sys.exit("usage: scheme-gen [--mode dark|light] <image>")
+
+    with Image.open(args[0]) as img:
+        img.seek(0)                                     # first frame of a GIF
+        thumb = img.convert("RGB")
+    thumb.thumbnail((128, 128), Image.Resampling.NEAREST)
+
+    # Caelestia's 128 px JPEG thumbnail, so a wallpaper gets the same colors as there.
+    with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+        thumb.save(f.name, "JPEG")
+        with Image.open(f.name) as jpeg:
+            jpeg = jpeg.convert("RGB")
+            variant = variant_for(jpeg)
+            light = is_light_image(jpeg) if mode == "auto" else mode == "light"
+        seed = score(ImageQuantizeCelebi(f.name, 1, 128))
+
+    colours = palette(seed, variant, light)
+    write_atomic(STATE_DIR / "scheme.json", json.dumps({"name": "dynamic", "flavour": "default",
+                                                        "mode": "light" if light else "dark", "variant": variant,
+                                                        "colours": colours}))
+
+    sway = fill(SWAY_TEMPLATE.read_text(), colours, True)
+    write_atomic(STATE_DIR / "sway.conf", sway)
+    if os.getenv("SWAYSOCK"):
+        for line in sway.splitlines():
+            if line and not line.startswith("#"):
+                subprocess.run(["swaymsg", line], stdout=subprocess.DEVNULL, check=False)
+
+    app_colours = palette(seed, variant, False) if light else colours
+    for template, (targets, hash) in APP_FILES.items():
+        text = fill((TEMPLATES / template).read_text(), app_colours, hash)
+        for target in targets:
+            write_atomic(CONFIG_DIR / target, text + THUNAR_IMPORT if target == "gtk-3.0/gtk.css" else text)
+
+if __name__ == "__main__":
+    main()

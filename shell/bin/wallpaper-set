@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# wallpaper-set <image>: set it with awww, remember it ($XDG_STATE_HOME/cts1/wallpaper), make the colors from it.
+set -euo pipefail
+
+wall="$(realpath "$1")"
+# Transition fps = the fastest monitor's refresh (sway reports mHz), else 60; AWWW_TRANSITION_FPS wins.
+fps="${AWWW_TRANSITION_FPS:-$(swaymsg -t get_outputs -r 2>/dev/null | python3 -c '
+import json, sys
+rates = [o["current_mode"]["refresh"] for o in json.load(sys.stdin) if o.get("active") and o.get("current_mode")]
+print(round(max(rates) / 1000) if rates else 60)' 2>/dev/null || echo 60)}"
+awww img -t center --transition-duration 1 --transition-fps "$fps" "$wall"
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cts1"
+mkdir -p "$state_dir"
+echo "$wall" > "$state_dir/wallpaper"
+
+# Colors last: if they fail, the wallpaper is still set.
+"$(dirname "$(realpath "$0")")/scheme-gen" "$wall" || echo "wallpaper-set: scheme-gen failed; colors unchanged" >&2

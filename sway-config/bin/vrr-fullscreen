@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Adaptive sync (VRR / G-Sync) only while something is fullscreen.
+
+Sway can only switch adaptive sync per output (on/off), while Hyprland's `vrr = 3` does "fullscreen games only" by itself.
+Always-on VRR can flicker on the desktop, so this watches sway's window/workspace events and turns adaptive_sync on while a
+fullscreen window is visible and off again otherwise. Started by the sway config (exec); exits when sway does.
+
+Browsers and video players are skipped (NO_VRR), like NVIDIA's Windows driver profiles do: fullscreen video under VRR judders because the
+monitor follows the player's uneven frame timing, and toggling adaptive sync on NVIDIA can blank/hitch the screen.
+"""
+import json, subprocess, sys
+
+NO_VRR = {"firefox", "vlc", "mpv"}  # app_ids (or X11 classes, for Xwayland windows) that never get VRR when fullscreen
+
+def sway(*args):
+    return subprocess.run(["swaymsg", *args], capture_output=True, text=True).stdout
+
+def fullscreen_visible():
+    tree = json.loads(sway("-t", "get_tree", "-r"))
+    found = False
+
+    def walk(n):
+        nonlocal found
+        if n.get("type") in ("con", "floating_con") and n.get("fullscreen_mode", 0) and n.get("visible") \
+                and (n.get("app_id") or n.get("window_properties", {}).get("class")) not in NO_VRR:
+            found = True
+        for c in n.get("nodes", []) + n.get("floating_nodes", []):
+            walk(c)
+
+    walk(tree)
+    return found
+
+last = None
+
+def update():
+    global last
+    want = fullscreen_visible()
+    if want != last:
+        sway("output", "*", "adaptive_sync", "on" if want else "off")
+        last = want
+
+update()
+proc = subprocess.Popen(["swaymsg", "-t", "subscribe", "-m", '["window","workspace"]'],
+                        stdout=subprocess.PIPE, text=True)
+for _ in proc.stdout:            # one line per event; re-check the state on each
+    update()
+sys.exit(0)

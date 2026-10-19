@@ -1,0 +1,16 @@
+#!/bin/bash
+# Lock through the running shell, or start one and lock it. Also the recovery from a TTY after a crash while locked:
+#   WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/$(id -u) /path/to/cts1/shell/bin/lock
+bin=$(cd "$(dirname "$0")" && pwd)
+shell=$(cd "$bin/.." && pwd)
+
+qs -p "$shell" ipc call lock lock >/dev/null 2>&1 && exit 0
+
+# No shell answered: start one and lock as soon as it answers (max 10 s).
+setsid -f "$bin/shell-restart" >/dev/null 2>&1
+for _ in $(seq 1 100); do
+    qs -p "$shell" ipc call lock lock >/dev/null 2>&1 && exit 0
+    sleep 0.1
+done
+echo "lock: the shell did not start, the screen is NOT locked" >&2
+exit 1

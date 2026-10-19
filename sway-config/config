@@ -1,0 +1,105 @@
+# CTS1 sway config, run by bin/sway (sets $CTS1_DIR). Own lines go in ~/.config/sway/config.d/ (included last).
+
+set $mod Mod4
+set $term kitty
+
+# awww, not swaybg, so the picker can change it live; wallpaper-restore re-applies the last one.
+exec $CTS1_DIR/shell/bin/wallpaper-restore
+
+# Only once: a second shell would fight over notifications and the tray.
+exec $CTS1_DIR/shell/bin/shell-restart
+
+# VRR only while fullscreen (sway switches it per output, so bin/vrr-fullscreen does), no tearing.
+output * adaptive_sync off
+output * allow_tearing no
+exec $CTS1_DIR/sway-config/bin/vrr-fullscreen
+
+# -w waits for the commands before sleeping.
+exec swayidle -w -C $CTS1_DIR/sway-config/swayidle/config
+
+for_window [app_id=".*"] inhibit_idle fullscreen
+for_window [class=".*"] inhibit_idle fullscreen
+
+# Portal file choosers (the avatar picker) have no parent window: float them.
+for_window [app_id="xdg-desktop-portal-gtk"] floating enable
+
+default_border pixel 1
+# Focused border in the shell's accent, written (and applied live) by scheme-gen.
+include ~/.local/state/cts1/sway.conf
+gaps inner 0
+floating_modifier $mod normal
+
+bindsym $mod+Return exec $term
+bindsym $mod+q kill
+bindsym $mod+Shift+c reload
+
+bindsym $mod+Left focus left
+bindsym $mod+Down focus down
+bindsym $mod+Up focus up
+bindsym $mod+Right focus right
+bindsym $mod+Shift+Left move left
+bindsym $mod+Shift+Down move down
+bindsym $mod+Shift+Up move up
+bindsym $mod+Shift+Right move right
+
+bindsym $mod+l exec $CTS1_DIR/shell/bin/lock
+# --locked = also from the lock screen; before-sleep locks first, so it wakes locked.
+bindsym --locked $mod+Shift+l exec systemctl suspend
+
+bindsym $mod+Shift+s exec $CTS1_DIR/shell/bin/screenshot area
+bindsym $mod+Ctrl+s exec $CTS1_DIR/shell/bin/screenshot edit
+bindsym $mod+Alt+s exec $CTS1_DIR/shell/bin/screenshot full
+
+bindsym $mod+Escape exec qs -p $CTS1_DIR/shell ipc call power toggle
+bindsym $mod+p exec qs -p $CTS1_DIR/shell ipc call perf toggle
+bindsym $mod+i exec qs -p $CTS1_DIR/shell ipc call settings toggle
+bindsym $mod+Shift+w exec qs -p $CTS1_DIR/shell ipc call wallpaper toggle
+bindsym $mod+t exec qs -p $CTS1_DIR/shell ipc call timer toggle
+bindsym $mod+n exec qs -p $CTS1_DIR/shell ipc call notes toggle
+
+# Always leaves exactly one copy (shell/bin/shell-restart).
+bindsym $mod+Shift+r exec $CTS1_DIR/shell/bin/shell-restart
+
+# 5% steps, max 100%, a change unmutes and shows the shell's indicator; --locked = also on the lock screen. Keep
+# $volstep = `volumeStep` in shell.qml.
+set $volstep 5
+bindsym --locked XF86AudioRaiseVolume exec sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ $volstep%+; qs -p $CTS1_DIR/shell ipc call osd trigger'
+bindsym --locked XF86AudioLowerVolume exec sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ $volstep%-; qs -p $CTS1_DIR/shell ipc call osd trigger'
+bindsym --locked XF86AudioMute exec sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; qs -p $CTS1_DIR/shell ipc call osd trigger'
+bindsym --locked XF86AudioMicMute exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
+
+# The shell steps the brightness itself (5%, `brightnessStep`) and shows the indicator. Laptop: XF86MonBrightness;
+# external monitor (DDC/CI): Super+F5 / F6.
+bindsym --locked XF86MonBrightnessDown exec qs -p $CTS1_DIR/shell ipc call brightness down
+bindsym --locked XF86MonBrightnessUp exec qs -p $CTS1_DIR/shell ipc call brightness up
+bindsym --locked $mod+F5 exec qs -p $CTS1_DIR/shell ipc call brightness down
+bindsym --locked $mod+F6 exec qs -p $CTS1_DIR/shell ipc call brightness up
+
+bindsym $mod+f fullscreen
+bindsym $mod+Shift+space floating toggle
+
+# Press again to close.
+bindsym $mod+space exec sh -c 'pkill -x fuzzel || exec fuzzel --keyboard-focus=exclusive --no-exit-on-keyboard-focus-loss'
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+
+# Sway runs no XDG autostart: the first polkit agent found (Arch polkit-gnome; Fedora lxqt-policykit / xfce-polkit;
+# Debian mate-polkit / lxpolkit), and the cliphist watchers.
+exec sh -c 'for f in /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 /usr/libexec/lxqt-policykit-agent /usr/libexec/xfce-polkit /usr/libexec/polkit-mate-authentication-agent-1 /usr/bin/lxpolkit; do [ -x "$f" ] && exec "$f"; done'
+exec wl-paste --type text --watch cliphist store
+exec wl-paste --type image --watch cliphist store
+
+# Give the D-Bus / systemd user environment this session, then restart the portal under "sway". Without it the GTK
+# portal can't start (GTK4 apps come up light) and D-Bus-started apps (Thunar) miss QT_QPA_PLATFORMTHEME.
+exec sh -c 'dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP SWAYSOCK QT_QPA_PLATFORMTHEME; systemctl --user try-restart xdg-desktop-portal-gtk xdg-desktop-portal'
+
+include ~/.config/sway/config.d/*

@@ -1,0 +1,12 @@
+# Lock after 3 min, screens off after 15, suspend after 90 (started by the sway config, which sets $CTS1_DIR).
+
+# setsid -f: with -w swayidle waits for a command to exit, and the lock runs until unlocked.
+timeout 180 'setsid -f $CTS1_DIR/shell/bin/lock'
+before-sleep 'setsid -f $CTS1_DIR/shell/bin/lock; sleep 1'
+
+timeout 900 'swaymsg "output * power off"' resume 'swaymsg "output * power on"'
+
+timeout 5400 'systemctl suspend'
+
+# After a wake: screens on, then every executable in ~/.config/sway/resume.d/ (detached).
+after-resume 'swaymsg "output * power on"; for f in $HOME/.config/sway/resume.d/*; do if [ -x "$f" ]; then setsid -f "$f"; fi; done'
